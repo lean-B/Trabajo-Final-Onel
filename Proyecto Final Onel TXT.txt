@@ -1,0 +1,482 @@
+- R2 — DHCP y WAN - Este se configura primero porque todos lo demas dispositivos  dependen de él
+
+enable
+configure terminal
+hostname R2
+
+- Interfaz hacia R3 y la WAN hacia R1
+interface Gig0/1
+ip address 192.168.100.2 255.255.255.252
+no shutdown
+exit
+
+- Serial hacia R4 (DCE = clock rate)
+interface Serial0/0/0
+ip address 192.168.100.10 255.255.255.252
+no shutdown
+exit
+
+- Serial hacia R3 (DCE = clock rate)
+interface Serial0/0/1
+ip address 192.168.100.6 255.255.255.252
+no shutdown
+exit
+
+- DHCP: Aqui excluimos las IPs de routers y gateways
+ip dhcp excluded-address 192.168.30.1 192.168.30.10
+ip dhcp excluded-address 192.168.50.1 192.168.50.10
+ip dhcp excluded-address 192.168.99.1 192.168.99.10
+ip dhcp excluded-address 192.168.32.1 192.168.32.14
+
+- Pool VLAN 300 - Estudiantes
+ip dhcp pool VLAN300
+network 192.168.30.0 255.255.255.0
+default-router 192.168.30.1
+dns-server 192.168.32.5
+exit
+
+- Pool VLAN 500 - Académicos
+ip dhcp pool VLAN500
+network 192.168.50.0 255.255.255.0
+default-router 192.168.50.1
+dns-server 192.168.32.5
+exit
+
+- Pool VLAN 999 - Nativa-Administrativa
+ip dhcp pool VLAN999
+network 192.168.99.0 255.255.255.0
+default-router 192.168.99.1
+dns-server 192.168.32.5
+exit
+
+- Rutas hacia VLANs de R1 (via R3 = .5) 
+ip route 192.168.30.0 255.255.255.0 192.168.100.5
+ip route 192.168.50.0 255.255.255.0 192.168.100.5
+ip route 192.168.99.0 255.255.255.0 192.168.100.5
+- Rutas hacia VLANs de R4 (directo = .9) 
+ip route 192.168.30.0 255.255.255.0 192.168.100.9
+ip route 192.168.50.0 255.255.255.0 192.168.100.9
+ip route 192.168.99.0 255.255.255.0 192.168.100.9
+- Ruta hacia LAN 192.168.32.0 via R3 
+ip route 192.168.32.0 255.255.255.0 192.168.100.5
+
+end
+write memory
+
+Este router actúa como el núcleo de servicios de la red. Su función principal es centralizar la asignación dinámica de direcciones IP mediante pools de DHCP para las distintas VLANs y gestionar el enrutamiento estático para interconectar todas las sedes este se configura de primero porque sin sus servicios de red y tablas de rutas, los demás dispositivos no podrían obtener conectividad ni comunicarse con el servidor DNS.
+
+- R3 — WAN serial + Gateway LAN del servidor
+
+enable
+configure terminal
+hostname R3
+
+- Serial hacia R2 y DTE con clock rate
+interface Serial0/0/0
+ip address 192.168.100.5 255.255.255.252
+clock rate 64000
+no shutdown
+exit
+
+- Gig0/0 → SW3 aqui esta la LAN del servidor DNS/Proyecto
+interface Gig0/0
+ip address 192.168.32.1 255.255.255.0
+no shutdown
+exit
+
+- Ruta por defecto hacia R2
+ip route 0.0.0.0 0.0.0.0 192.168.100.6
+- Ruta hacia R1 via R2 
+ip route 192.168.100.0 255.255.255.252 192.168.100.6
+ip route 192.168.30.0 255.255.255.0 192.168.100.6
+ip route 192.168.50.0 255.255.255.0 192.168.100.6
+ip route 192.168.99.0 255.255.255.0 192.168.100.6
+
+end
+write memory
+
+Este dispositivo funciona como el puerta de enlace (Gateway) para la zona de servidores y gestión (WLC, DNS, APs) su configuración logra establecer el enlace serial hacia el resto de la red WAN y asegura que la red local 192.168.32.0 sea alcanzable asi mismo al incluir una ruta por defecto hacia R2, garantiza que todo el tráfico de los servidores pueda salir hacia cualquier otra VLAN del campus.
+
+- R1 — WAN + Subinterfaces VLAN + HSRP Standby
+
+enable
+configure terminal
+hostname R1
+
+- WAN hacia R3
+interface Gig0/1
+ip address 192.168.100.1 255.255.255.252
+no shutdown
+exit
+
+- Interfaz física hacia el SW1 sin IP
+interface Gig0/0
+no ip address
+no shutdown
+exit
+
+
+- VLAN 300 — helper que apunta a R2 
+interface Gig0/0.300
+encapsulation dot1q 300
+ip address 192.168.30.2 255.255.255.0
+ip helper-address 192.168.100.6
+standby 1 ip 192.168.30.1
+standby 1 priority 90
+standby 1 preempt
+exit
+
+- VLAN 500 
+interface Gig0/0.500
+encapsulation dot1q 500
+ip address 192.168.50.2 255.255.255.0
+ip helper-address 192.168.100.6
+standby 2 ip 192.168.50.1
+standby 2 priority 90
+standby 2 preempt
+exit
+
+- VLAN 999 (native) 
+interface Gig0/0.999
+encapsulation dot1q 999 native
+ip address 192.168.99.2 255.255.255.0
+ip helper-address 192.168.100.6
+standby 3 ip 192.168.99.1
+standby 3 priority 90
+standby 3 preempt
+exit
+
+- Ruta por defecto hacia R3
+ip route 0.0.0.0 0.0.0.0 192.168.100.2
+
+end
+write memory
+
+R1 es uno de los dos routers encargados del enrutamiento entre VLANs (Router-on-a-Stick) por eso utiliza subinterfaces para segmentar el tráfico de estudiantes y académicos por eso en este diseño, R1 está configurado como el router de respaldo Standby en el protocolo HSRP, lo que significa que solo asumirá el control del tráfico si el router principal (R4) falla, garantizando asi alta disponibilidad.
+
+- R4 — Serial WAN + Subinterfaces + HSRP Activo
+
+enable
+configure terminal
+hostname R4
+
+- Serial hacia R2 y DTE con clock rate
+interface Serial0/0/0
+ip address 192.168.100.9 255.255.255.252
+clock rate 64000
+no shutdown
+exit
+
+- Interfaz física hacia el SW2 sin IP
+interface Gig0/1
+no ip address
+no shutdown
+exit
+
+- VLAN 300 — helper directo de R2 
+interface Gig0/1.300
+encapsulation dot1Q 300
+ip address 192.168.30.3 255.255.255.0
+ip helper-address 192.168.100.10
+standby 1 ip 192.168.30.1
+standby 1 priority 110
+standby 1 preempt
+exit
+
+- VLAN 500 
+interface Gig0/1.500
+encapsulation dot1q 500
+ip address 192.168.50.3 255.255.255.0
+ip helper-address 192.168.100.10
+standby 2 ip 192.168.50.1
+standby 2 priority 110
+standby 2 preempt
+exit
+
+- VLAN 999 (native)
+interface Gig0/1.999
+encapsulation dot1q 999 native
+ip address 192.168.99.3 255.255.255.0
+ip helper-address 192.168.100.10
+standby 3 ip 192.168.99.1
+standby 3 priority 110
+standby 3 preempt
+exit
+
+- Ruta por defecto hacia R2 
+ip route 0.0.0.0 0.0.0.0 192.168.100.10
+
+end
+write memory
+
+A diferencia de R1, el router R4 está configurado con una prioridad más alta (110) en HSRP, lo que lo convierte en el Puerta de Enlace Activa para los usuarios. Es el encargado principal de recibir las solicitudes de DHCP usando el ip helper-address y de encaminar el tráfico de los dispositivos finales hacia la WAN mientras el sistema funcione con total normalidad.
+
+- SW1 — VLANs + LACP Active + STP Root
+
+enable
+configure terminal
+hostname SW1
+
+- Creamos las VLANs
+vlan 300
+name Estudiantes
+exit
+vlan 500
+name Academicos
+exit
+vlan 999
+name Nativa-Administrativa
+exit
+
+- Puertos acceso para la VLAN 500
+interface range Fa0/9 , Fa0/17
+switchport mode access
+switchport access vlan 500
+spanning-tree portfast
+no shutdown
+exit
+
+- Trunk hacia R1 
+interface GigabitEthernet0/2
+switchport mode trunk
+switchport trunk native vlan 999
+switchport trunk allowed vlan 300,500,999
+no shutdown
+exit
+
+
+- EtherChannel LACP hacia SW2 y SW1 es ACTIVE
+interface range Fa0/23-24
+switchport mode trunk
+switchport trunk native vlan 999
+switchport trunk allowed vlan 300,500,999
+channel-protocol lacp
+channel-group 1 mode active
+no shutdown
+exit
+
+interface Port-channel1
+switchport mode trunk
+switchport trunk native vlan 999
+switchport trunk allowed vlan 300,500,999
+no shutdown
+exit
+
+- STP: Asi el SW1 es Puente Raíz para 300, 500, 999
+spanning-tree vlan 300 root primary
+spanning-tree vlan 500 root primary
+spanning-tree vlan 999 root primary
+
+- IP de gestión para la VLAN 999
+interface vlan 999
+ip address 192.168.99.10 255.255.255.0
+no shutdown
+exit
+ip default-gateway 192.168.99.1
+
+end
+write memory
+
+SW1 es el switch de distribución principal en la jerarquía de capa 2 por eso además de crear las VLANs, se ha configurado como el Puente Raíz (Root Primary) de Spanning Tree para evitar bucles de red este también inicia la agregación de enlaces mediante LACP en modo activo, negociando un canal de fibra o cobre virtual (EtherChannel) con el SW2 para aumentar el ancho de banda y la redundancia.
+
+- SW2 — VLANs + LACP Passive + puertos acceso
+
+enable
+configure terminal
+hostname SW2
+
+- Creamos las VLANs
+vlan 300
+name Estudiantes
+exit
+vlan 500
+name Academicos
+exit
+vlan 999
+name Nativa-Administrativa
+exit
+
+- Puertos de acceso VLAN 300 
+interface range Fa0/5 , Fa0/6 , Fa0/20
+switchport mode access
+switchport access vlan 300
+spanning-tree portfast
+no shutdown
+exit
+
+- Trunk hacia R4 
+interface GigabitEthernet0/2
+switchport mode trunk
+switchport trunk native vlan 999
+switchport trunk allowed vlan 300,500,999
+no shutdown
+exit
+
+- EtherChannel LACP hacia SW1 y SW2 como PASSIVE
+interface range Fa0/23-24
+switchport mode trunk
+switchport trunk native vlan 999
+switchport trunk allowed vlan 300,500,999
+channel-protocol lacp
+channel-group 1 mode passive
+no shutdown
+exit
+
+interface Port-channel1
+switchport mode trunk
+switchport trunk native vlan 999
+switchport trunk allowed vlan 300,500,999
+no shutdown
+exit
+
+- IP de gestión para la VLAN 999 
+interface vlan 999
+ip address 192.168.99.11 255.255.255.0
+no shutdown
+exit
+ip default-gateway 192.168.99.1
+
+end
+write memory
+
+Este switch se encarga de la conectividad de los dispositivos finales (PCs de estudiantes y académicos) por eso mismo su configuración de EtherChannel es pasiva, lo que significa que espera a que SW1 inicie la negociación del enlace, asi mismo  implementa spanning-tree portfast en sus puertos de acceso para que las computadoras se conecten instantáneamente sin esperar los tiempos de convergencia del protocolo STP.
+
+- SW3 — LAN del servidor / WLC / APs
+
+enable
+configure terminal
+hostname SW3
+
+- IP de gestión
+interface vlan 1
+ip address 192.168.32.2 255.255.255.0
+no shutdown
+exit
+ip default-gateway 192.168.32.1
+
+- Todos los puertos en acceso a la lan plana
+interface GigabitEthernet0/1
+switchport mode access
+spanning-tree portfast
+no shutdown
+exit
+
+interface FastEthernet0/1
+switchport mode access
+spanning-tree portfast
+no shutdown
+exit
+
+interface FastEthernet0/2
+switchport mode access
+spanning-tree portfast
+no shutdown
+exit
+
+interface FastEthernet0/3
+switchport mode access
+spanning-tree portfast
+no shutdown
+exit
+
+interface FastEthernet0/4
+switchport mode access
+spanning-tree portfast
+no shutdown
+exit
+
+interface GigabitEthernet0/2
+switchport mode access
+spanning-tree portfast
+no shutdown
+exit
+
+end
+write memory
+
+Este es un switch dedicado exclusivamente a la infraestructura de servicios y conectividad inalámbrica y a diferencia de los otros, maneja una "red plana" donde todos los puertos están en la misma LAN para facilitar la comunicación directa entre el Servidor, el Controlador Wireless (WLC) y los Puntos de Acceso (APs), actuando como el nodo central de la gestión administrativa.
+
+- Servidor DNS-WEB-DHCP — IP estática 192.168.32.5
+Configuración IP del servidor (en PT):
+Desktop - IP Configuration (Static)
+IP Address  : 192.168.32.5
+Subnet Mask : 255.255.255.0
+Gateway     : 192.168.32.1
+DNS Server  : 192.168.32.5
+
+Services - DHCP:
+Pool Name   : serverPool
+Default GW  : 192.168.32.1
+DNS Server  : 192.168.32.5
+Start IP    : 192.168.32.3
+Subnet Mask : 255.255.255.0
+Max Users   : 253
+Save · Service: ON
+
+Services - DNS:
+DNS Service: ON
+Agrega los registros A:
+192.168.32.4   
+192.168.32.5
+Add · Save
+
+Services - AAA (para WPA2-Enterprise / WLC):
+Network Configuration:
+Client Name : PROYECTO
+Client IP   : 192.168.32.4
+Secret      : cisco123
+Server type : Radius
+Port        : 1812
+Add
+
+User Setup:
+Username : Duarte, Mella, Sanchez
+Password : cisco123
+Add
+
+Este nodo centraliza los servicios de red esenciales. El servicio DNS traduce nombres de dominio en IPs, el DHCP asigna direcciones a la LAN administrativa, y el servicio AAA (RADIUS) proporciona la seguridad necesaria para la red inalámbrica empresarial, permitiendo que los usuarios se autentiquen con credenciales individuales (Duarte, Mella, Sanchez) en lugar de una clave compartida.
+
+- WLC — Redes inalámbricas
+IP estática del WLC (PT - Config):
+IP Address  : 192.168.32.4
+Subnet Mask : 255.255.255.0
+Gateway     : 192.168.32.1
+DNS         : 192.168.32.5
+
+APs — activar DHCP en Config:
+En AP-BIBLIOTECA: Config - Interface - DHCP → ON
+En AP-LOBBY     : Config - Interface - DHCP → ON
+(así obtienen IP automática de la LAN 192.168.32.x)
+Acceder al WLC (desde Mella-Admin):
+Mella-Admin Desktop - Web Browser:
+URL    : http://192.168.32.4
+Usuario: Leandro
+Pass   : Cisco123
+
+
+- BLOQUE SSH 
+
+enable
+configure terminal
+
+ip domain-name campus.local
+crypto key generate rsa general-keys modulus 1024
+
+ip ssh version 2
+
+username 20241375 privilege 1 secret Fe2024
+username opelegrino privilege 15 secret Fe2024
+
+enable secret Fe2024
+
+line console 0
+password Fe2024
+login
+exit
+
+line vty 0 4
+transport input ssh
+login local
+exit
+
+Este bloque establece la seguridad administrativa del equipo por eso en lugar de usar Telnet que envía datos en texto plano, se activa SSH versión 2 con cifrado RSA para proteger las sesiones de configuración remota. Además, define usuarios locales con diferentes niveles de privilegios y asegura el acceso físico a la consola y el acceso privilegiado mediante las contraseñas cifradas.
